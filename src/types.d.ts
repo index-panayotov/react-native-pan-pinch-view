@@ -4,6 +4,7 @@ type Dimensions = {
   width: number;
   height: number;
 };
+
 export type PanPinchViewProps = {
   /**
    * Dimensions of the container holding the zoomable View.
@@ -38,8 +39,16 @@ export type PanPinchViewProps = {
   initialScale?: number;
 
   /**
-   * Scale the view based on center of pinching.
-   * @default true
+   * Callback function called when translation is finished updating.
    */
-  shouldAdjustFocal?: boolean;
+  onTranslationFinished?: Function;
+};
+
+export type PanPinchViewRef = {
+  scaleTo: Function;
+  setContentSize: Function;
+  translateTo: Function;
+  setMinScale: Function;
+  setMaxScale: Function;
+  getScale: Function;
 };

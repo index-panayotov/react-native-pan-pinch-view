@@ -1,32 +1,42 @@
-import React, { useEffect } from 'react';
-import { StyleSheet, View } from 'react-native';
+import React, { forwardRef, useImperativeHandle } from 'react';
+import { Platform, StyleSheet, View } from 'react-native';
 import {
   Gesture,
   GestureDetector,
   GestureHandlerRootView,
+} from 'react-native-gesture-handler';
+import type {
   GestureStateChangeEvent,
   GestureUpdateEvent,
   PanGestureHandlerEventPayload,
   PinchGestureHandlerEventPayload,
+  PinchGestureChangeEventPayload,
 } from 'react-native-gesture-handler';
 import Animated, {
   useAnimatedReaction,
   useAnimatedStyle,
   useSharedValue,
   withTiming,
+  runOnJS,
 } from 'react-native-reanimated';
-import { clamp, useVector } from 'react-native-redash';
-import type { PanPinchViewProps } from './types';
+import type { PanPinchViewProps, PanPinchViewRef } from './types';
+import { clamp, useVector } from './math';
 
-export default function PanPinchView({
-  containerDimensions = { width: 0, height: 0 },
-  contentDimensions = { width: 0, height: 0 },
-  minScale = 0.5,
-  maxScale = 4,
-  initialScale = 1,
-  shouldAdjustFocal = false,
-  children,
-}: PanPinchViewProps) {
+export default forwardRef(function PanPinchView(
+  {
+    containerDimensions = { width: 0, height: 0 },
+    contentDimensions = { width: 0, height: 0 },
+    minScale = 0.5,
+    maxScale = 4,
+    initialScale = 1,
+    onTranslationFinished = undefined,
+    children,
+  }: PanPinchViewProps,
+  ref: React.Ref<PanPinchViewRef>
+) {
+  const currentMinScale = useSharedValue(minScale);
+  const currentMaxScale = useSharedValue(maxScale);
+
   const scale = useSharedValue(initialScale);
   const lastScale = useSharedValue(initialScale);
 
@@ -38,49 +48,64 @@ export default function PanPinchView({
   const isPinching = useSharedValue(false);
   const isResetting = useSharedValue(false);
 
-  const layout = useVector(contentDimensions.width, contentDimensions.height);
+  const isAndroidPinchActivated = useSharedValue(false);
+
+  const contentSize = useVector(
+    contentDimensions.width,
+    contentDimensions.height
+  );
+
+  const setContentSize = ({
+    width,
+    height,
+  }: {
+    width: number;
+    height: number;
+  }) => {
+    contentSize.x.value = width;
+    contentSize.y.value = height;
+  };
+
+  const scaleTo = (value: number, animated: boolean) => {
+    scale.value = animated ? withTiming(value) : value;
+    lastScale.value = value;
+  };
+
+  const translateTo = (x: number, y: number, animated: boolean) => {
+    translation.x.value = 0;
+    translation.y.value = 0;
+    offset.x.value = animated ? withTiming(x) : x;
+    offset.y.value = animated ? withTiming(y) : y;
+  };
+
+  const setMinScale = (value: number) => {
+    currentMinScale.value = value;
+  };
+
+  const setMaxScale = (value: number) => {
+    currentMaxScale.value = value;
+  };
+
+  const getScale = (): number => {
+    return scale.value;
+  };
+
+  useImperativeHandle(ref, () => ({
+    scaleTo,
+    setContentSize,
+    translateTo,
+    setMinScale,
+    setMaxScale,
+    getScale,
+  }));
 
   const animatedStyle = useAnimatedStyle(() => {
     const translateX = offset.x.value + translation.x.value;
     const translateY = offset.y.value + translation.y.value;
     return {
-      transform: [
-        { translateX },
-        { translateY },
-        { translateX: -layout.x.value / 2 },
-        { translateY: -layout.y.value / 2 },
-        { scale: scale.value },
-        { translateX: (-layout.x.value / 2) * -1 },
-        { translateY: (-layout.y.value / 2) * -1 },
-      ],
+      transform: [{ translateX }, { translateY }, { scale: scale.value }],
     };
   });
-
-  const animateToInitialState = () => {
-    'worklet';
-
-    isResetting.value = true;
-
-    scale.value = withTiming(initialScale);
-    lastScale.value = withTiming(initialScale);
-
-    translation.x.value = withTiming(0);
-    translation.y.value = withTiming(0);
-
-    offset.x.value = withTiming(0);
-    offset.y.value = withTiming(0);
-
-    adjustedFocal.x.value = withTiming(0);
-    adjustedFocal.y.value = withTiming(0);
-
-    origin.x.value = withTiming(0);
-    origin.y.value = withTiming(0);
-
-    layout.x.value = contentDimensions.width;
-    layout.y.value = contentDimensions.height;
-
-    isPinching.value = false;
-  };
 
   const setAdjustedFocal = ({
     focalX,
@@ -91,38 +116,38 @@ export default function PanPinchView({
   }) => {
     'worklet';
 
-    adjustedFocal.x.value = focalX - (layout.x.value / 2 + offset.x.value);
-    adjustedFocal.y.value = focalY - (layout.y.value / 2 + offset.y.value);
-  };
-
-  const getAdjustedTranslation = () => {
-    'worklet';
-    return {
-      x:
-        adjustedFocal.x.value +
-        ((-1 * scale.value) / lastScale.value) * origin.x.value,
-      y:
-        adjustedFocal.y.value +
-        ((-1 * scale.value) / lastScale.value) * origin.y.value,
-    };
+    adjustedFocal.x.value = focalX - (contentSize.x.value / 2 + offset.x.value);
+    adjustedFocal.y.value = focalY - (contentSize.y.value / 2 + offset.y.value);
   };
 
   const getEdges = () => {
     'worklet';
-    const pointX =
-      (layout.x.value * scale.value - containerDimensions.width) * -1;
-    const pointY =
-      (layout.y.value * scale.value - containerDimensions.height) * -1;
-    return {
-      x: {
-        min: Math.min(pointX, 0),
-        max: Math.max(0, pointX),
-      },
-      y: {
-        min: Math.min(pointY, 0),
-        max: Math.max(0, pointY),
-      },
-    };
+    const edges = { x: { min: 0, max: 0 }, y: { min: 0, max: 0 } };
+
+    const newWidth = contentSize.x.value * scale.value;
+    let scaleOffsetX = (newWidth - contentSize.x.value) / 2;
+    if (newWidth > containerDimensions.width) {
+      edges.x.min = Math.round(
+        (newWidth - containerDimensions.width) * -1 + scaleOffsetX
+      );
+      edges.x.max = scaleOffsetX;
+    } else {
+      edges.x.min = scaleOffsetX;
+      edges.x.max = containerDimensions.width - newWidth + scaleOffsetX;
+    }
+
+    const newHeight = contentSize.y.value * scale.value;
+    let scaleOffsetY = (newHeight - contentSize.y.value) / 2;
+    if (newHeight > containerDimensions.height) {
+      edges.y.min = Math.round(
+        (newHeight - containerDimensions.height) * -1 + scaleOffsetY
+      );
+      edges.y.max = scaleOffsetY;
+    } else {
+      edges.y.min = scaleOffsetY;
+      edges.y.max = containerDimensions.height - newHeight + scaleOffsetY;
+    }
+    return edges;
   };
 
   const onGestureStart = () => {
@@ -136,7 +161,7 @@ export default function PanPinchView({
 
   const panGesture = Gesture.Pan()
     .averageTouches(true)
-    .onStart(() => {
+    .onBegin(() => {
       'worklet';
       onGestureStart();
     })
@@ -155,32 +180,54 @@ export default function PanPinchView({
 
         onGestureStart();
 
-        if (shouldAdjustFocal) {
-          setAdjustedFocal({ focalX: event.focalX, focalY: event.focalY });
-          origin.x.value = adjustedFocal.x.value;
-          origin.y.value = adjustedFocal.y.value;
+        if (Platform.OS === 'android') {
+          isAndroidPinchActivated.value = false;
         }
+
+        setAdjustedFocal({ focalX: event.focalX, focalY: event.focalY });
+        origin.x.value = adjustedFocal.x.value;
+        origin.y.value = adjustedFocal.y.value;
 
         lastScale.value = scale.value;
       }
     )
-    .onChange((event) => {
-      'worklet';
+    .onChange(
+      (
+        event: GestureUpdateEvent<
+          PinchGestureHandlerEventPayload & PinchGestureChangeEventPayload
+        >
+      ) => {
+        'worklet';
 
-      if (event.numberOfPointers < 2) {
-        return;
-      }
+        if (event.numberOfPointers !== 2) {
+          return;
+        }
 
-      isPinching.value = true;
-      scale.value = Math.max(scale.value * event.scaleChange, minScale);
+        if (!isAndroidPinchActivated.value && Platform.OS === 'android') {
+          setAdjustedFocal({ focalX: event.focalX, focalY: event.focalY });
 
-      if (shouldAdjustFocal) {
+          origin.x.value = adjustedFocal.x.value;
+          origin.y.value = adjustedFocal.y.value;
+
+          isAndroidPinchActivated.value = true;
+        }
+
+        isPinching.value = true;
+        scale.value = Math.max(
+          scale.value * event.scaleChange,
+          currentMinScale.value
+        );
+
         setAdjustedFocal({ focalX: event.focalX, focalY: event.focalY });
-        const adjustedTranslation = getAdjustedTranslation();
-        translation.x.value = adjustedTranslation.x;
-        translation.y.value = adjustedTranslation.y;
+
+        translation.x.value =
+          adjustedFocal.x.value +
+          ((-1 * scale.value) / lastScale.value) * origin.x.value;
+        translation.y.value =
+          adjustedFocal.y.value +
+          ((-1 * scale.value) / lastScale.value) * origin.y.value;
       }
-    })
+    )
     .onFinalize(() => {
       'worklet';
       if (isPinching.value) {
@@ -188,8 +235,13 @@ export default function PanPinchView({
 
         lastScale.value = scale.value;
 
-        if (lastScale.value > maxScale || lastScale.value < minScale) {
-          scale.value = withTiming(clamp(scale.value, minScale, maxScale));
+        if (
+          lastScale.value > currentMaxScale.value ||
+          lastScale.value < currentMinScale.value
+        ) {
+          scale.value = withTiming(
+            clamp(scale.value, currentMinScale.value, currentMaxScale.value)
+          );
         }
       }
     });
@@ -204,9 +256,10 @@ export default function PanPinchView({
         isPinching: isPinching.value,
         offsetX: offset.x.value,
         offsetY: offset.y.value,
+        onTranslationUpdated: onTranslationFinished,
       };
     },
-    (newTransform, previousTransform) => {
+    (newTransform: any, previousTransform: any) => {
       if (previousTransform !== null) {
         if (isPinching.value) {
           return;
@@ -222,11 +275,33 @@ export default function PanPinchView({
           edges.x.min - offset.x.value,
           edges.x.max - offset.x.value
         );
+
         let boundedY = clamp(
           newTransform.translationY,
           edges.y.min - offset.y.value,
           edges.y.max - offset.y.value
         );
+
+        // notify about translation changes, if required
+        if (onTranslationFinished) {
+          let clampedX = false;
+          let clampedY = false;
+          if (boundedX !== newTransform.translationX) {
+            clampedX = true;
+          }
+
+          if (boundedY !== newTransform.translationY) {
+            clampedY = true;
+          }
+
+          // @ts-ignore
+          runOnJS(onTranslationFinished)({
+            x: boundedX,
+            y: boundedY,
+            clampedX,
+            clampedY,
+          });
+        }
 
         translation.x.value = withTiming(boundedX);
         translation.y.value = withTiming(boundedY);
@@ -234,17 +309,7 @@ export default function PanPinchView({
     }
   );
 
-  const gestures = Gesture.Race(panGesture, pinchGesture);
-
-  useEffect(() => {
-    animateToInitialState();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [
-    containerDimensions.width,
-    containerDimensions.height,
-    contentDimensions.width,
-    contentDimensions.height,
-  ]);
+  const gestures = Gesture.Simultaneous(panGesture, pinchGesture);
 
   return (
     <GestureHandlerRootView>
@@ -262,8 +327,8 @@ export default function PanPinchView({
             style={[
               styles.content,
               {
-                width: contentDimensions.width,
-                height: contentDimensions.height,
+                width: contentSize.x,
+                height: contentSize.y,
               },
               animatedStyle,
             ]}
@@ -274,7 +339,7 @@ export default function PanPinchView({
       </GestureDetector>
     </GestureHandlerRootView>
   );
-}
+});
 
 const styles = StyleSheet.create({
   container: {
